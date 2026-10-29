@@ -6,49 +6,148 @@
 <title>発音練習</title>
 <style>
   body { font-family: sans-serif; margin: 0; padding: 16px; background: #f4f6fa; }
-  h1 { font-size: 20px; }
+  h1 { font-size: 20px; } h2 { font-size: 17px; margin: 0 0 8px; }
   .card { background: #fff; border-radius: 12px; padding: 14px; margin-bottom: 14px; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
-  textarea { width: 100%; font-size: 16px; box-sizing: border-box; }
+  textarea, input { width: 100%; font-size: 16px; box-sizing: border-box; padding: 6px; }
   button { font-size: 16px; padding: 10px 14px; margin: 4px 4px 0 0; border: none; border-radius: 8px; background: #3b6ef5; color: #fff; }
-  button.rec { background: #e5484d; }
-  button.sub { background: #888; }
+  button.rec { background: #e5484d; } button.sub { background: #888; }
   .sentence { font-size: 18px; margin-bottom: 6px; }
+  .src { font-size: 12px; color: #888; }
   .result { margin-top: 8px; font-size: 16px; }
-  .ng { color: #e5484d; font-weight: bold; text-decoration: underline; }
-  .ok { color: #1a9a4a; }
+  .ng { color: #e5484d; font-weight: bold; text-decoration: underline; } .ok { color: #1a9a4a; }
+  #player { width: 100%; aspect-ratio: 16/9; }
+  #captions { max-height: 45vh; overflow-y: auto; margin-top: 8px; }
+  .line { padding: 8px; border-bottom: 1px solid #eee; font-size: 16px; }
+  .line.sel { background: #dce6ff; }
+  .time { color: #888; font-size: 12px; margin-right: 6px; }
 </style>
 </head>
 <body>
 <h1>発音練習アプリ</h1>
 
 <div class="card">
+  <h2>YouTubeから登録</h2>
+  <input id="ytUrl" placeholder="YouTubeのURLを貼り付け">
+  <button onclick="loadVideo()">読み込む</button>
+  <div id="player"></div>
+  <div id="ytStatus" class="src"></div>
+  <div id="captions"></div>
+  <button onclick="registerSelected()">選択した行を登録</button>
+</div>
+
+<div class="card">
+  <h2>自分で入力して登録</h2>
   <textarea id="newText" rows="2" placeholder="練習したい英文を入力"></textarea>
   <button onclick="addSentence()">例文を登録</button>
 </div>
 
 <div id="list"></div>
 
+<script src="https://www.youtube.com/iframe_api"></script>
 <script>
-let sentences = JSON.parse(localStorage.getItem('sentences') || '[]');
-const recordings = {}; // 例文ごとの録音データ(index → Blob URL)
+const hatsuon.sgqa1837ngqxadj.workers.dev/ = 'https://xxxx.ユーザー名.workers.dev'; // ← 自分のWorkerのURLに書き換える
+
+// 例文は {text, videoId?, start?, end?} の形で保存(前の文字列だけの形式も読み込める)
+let sentences = JSON.parse(localStorage.getItem('sentences') || '[]')
+  .map(s => typeof s === 'string' ? { text: s } : s);
+const recordings = {};
 let recorder = null;
+let player = null, playerReady = false, currentVideoId = null;
+let captionLines = [], selected = new Set();
 
 function save() { localStorage.setItem('sentences', JSON.stringify(sentences)); }
 
+// ---- YouTube プレイヤー ----
+function onYouTubeIframeAPIReady() {
+  player = new YT.Player('player', {
+    playerVars: { playsinline: 1 },
+    events: { onReady: () => { playerReady = true; } }
+  });
+}
+
+function getVideoId(url) {
+  const m = url.match(/(?:v=|youtu\.be\/|shorts\/|embed\/)([\w-]{11})/);
+  return m ? m[1] : (/^[\w-]{11}$/.test(url) ? url : null);
+}
+
+async function loadVideo() {
+  const id = getVideoId(document.getElementById('ytUrl').value.trim());
+  const status = document.getElementById('ytStatus');
+  if (!id) { alert('URLが正しくありません'); return; }
+  currentVideoId = id;
+  if (playerReady) player.cueVideoById(id);
+  status.textContent = '字幕を読み込み中…';
+  try {
+    const res = await fetch(`${hatsuon.sgqa1837ngqxadj.workers.dev/}/?v=${id}`);
+    const data = await res.json();
+    if (data.error) { status.textContent = 'エラー: ' + data.error; return; }
+    captionLines = data.lines;
+    selected.clear();
+    status.textContent = `${data.title}(${captionLines.length}行)行をタップで選択、続けて複数選ぶと1文にまとまります`;
+    renderCaptions();
+  } catch (e) {
+    status.textContent = '読み込みに失敗しました: ' + e;
+  }
+}
+
+function renderCaptions() {
+  const box = document.getElementById('captions');
+  box.innerHTML = '';
+  captionLines.forEach((l, i) => {
+    const d = document.createElement('div');
+    d.className = 'line' + (selected.has(i) ? ' sel' : '');
+    d.innerHTML = `<span class="time">${fmt(l.start)}</span>${escapeHtml(l.text)}`;
+    d.onclick = () => {
+      selected.has(i) ? selected.delete(i) : selected.add(i);
+      d.classList.toggle('sel');
+      playSegment(currentVideoId, l.start, l.end); // タップした行を試し聞き
+    };
+    box.appendChild(d);
+  });
+}
+
+function registerSelected() {
+  if (!selected.size) { alert('行を選んでください'); return; }
+  const idx = [...selected].sort((a, b) => a - b);
+  sentences.push({
+    text: idx.map(i => captionLines[i].text).join(' '),
+    videoId: currentVideoId,
+    start: captionLines[idx[0]].start,
+    end: captionLines[idx[idx.length - 1]].end
+  });
+  save();
+  selected.clear();
+  renderCaptions();
+  render();
+}
+
+// 動画の指定区間を再生し、終わったら callback
+let segTimer = null;
+function playSegment(videoId, start, end, callback) {
+  if (!playerReady) { alert('プレイヤーの準備中です'); return; }
+  clearInterval(segTimer);
+  speechSynthesis.cancel();
+  player.loadVideoById({ videoId, startSeconds: start });
+  segTimer = setInterval(() => {
+    if (player.getCurrentTime() >= end) {
+      player.pauseVideo();
+      clearInterval(segTimer);
+      if (callback) callback();
+    }
+  }, 100);
+}
+
+// ---- 例文リスト ----
 function addSentence() {
   const t = document.getElementById('newText').value.trim();
   if (!t) return;
-  sentences.push(t);
+  sentences.push({ text: t });
   save();
   document.getElementById('newText').value = '';
   render();
 }
 
-function removeSentence(i) {
-  sentences.splice(i, 1);
-  save();
-  render();
-}
+function removeSentence(i) { sentences.splice(i, 1); save(); render(); }
 
 function render() {
   const list = document.getElementById('list');
@@ -57,8 +156,9 @@ function render() {
     const div = document.createElement('div');
     div.className = 'card';
     div.innerHTML = `
-      <div class="sentence">${escapeHtml(s)}</div>
-      <button onclick="speak(${i})">お手本</button>
+      <div class="sentence">${escapeHtml(s.text)}</div>
+      <div class="src">${s.videoId ? 'YouTube ' + fmt(s.start) : '合成音声'}</div>
+      <button onclick="playModel(${i})">お手本</button>
       <button class="rec" id="rec${i}" onclick="toggleRecord(${i})">録音</button>
       <button onclick="compare(${i})">聞き比べ</button>
       <button onclick="check(${i})">発音チェック</button>
@@ -68,24 +168,20 @@ function render() {
   });
 }
 
-// お手本音声(合成音声)を再生。終わったら callback を呼ぶ
-function speak(i, callback) {
+// お手本:YouTube由来なら動画の区間、そうでなければ合成音声
+function playModel(i, callback) {
+  const s = sentences[i];
+  if (s.videoId) { playSegment(s.videoId, s.start, s.end, callback); return; }
   speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(sentences[i]);
-  u.lang = 'en-US';
-  u.rate = 0.9;
+  const u = new SpeechSynthesisUtterance(s.text);
+  u.lang = 'en-US'; u.rate = 0.9;
   if (callback) u.onend = callback;
   speechSynthesis.speak(u);
 }
 
-// 録音の開始・停止
 async function toggleRecord(i) {
   const btn = document.getElementById('rec' + i);
-  if (recorder && recorder.state === 'recording') {
-    recorder.stop();
-    btn.textContent = '録音';
-    return;
-  }
+  if (recorder && recorder.state === 'recording') { recorder.stop(); btn.textContent = '録音'; return; }
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   const chunks = [];
   recorder = new MediaRecorder(stream);
@@ -99,48 +195,41 @@ async function toggleRecord(i) {
   btn.textContent = '停止';
 }
 
-// お手本 → 自分の声 の順で連続再生
 function compare(i) {
   if (!recordings[i]) { alert('先に録音してください'); return; }
-  speak(i, () => {
-    setTimeout(() => new Audio(recordings[i]).play(), 400);
-  });
+  playModel(i, () => setTimeout(() => new Audio(recordings[i]).play(), 400));
 }
 
-// 発音チェック:話した内容を文字起こしして例文と比較
 function check(i) {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) { alert('このブラウザは音声認識に対応していません'); return; }
   const res = document.getElementById('res' + i);
   const rec = new SR();
   rec.lang = 'en-US';
-  rec.interimResults = false;
   res.textContent = '話してください…';
   rec.onresult = e => {
     const heard = e.results[0][0].transcript;
-    res.innerHTML = '聞き取り結果: ' + escapeHtml(heard) + '<br>' + diff(sentences[i], heard);
+    res.innerHTML = '聞き取り結果: ' + escapeHtml(heard) + '<br>' + diff(sentences[i].text, heard);
   };
   rec.onerror = e => { res.textContent = 'エラー: ' + e.error; };
   rec.start();
 }
 
-// 例文の各単語が聞き取れたかを色分け
 function diff(target, heard) {
-  const norm = s => s.toLowerCase().replace(/[^a-z0-9' ]/g, '').split(/\s+/).filter(Boolean);
+  const norm = s => s.toLowerCase().replace(/[^a-z0-9' ]/g, ' ').split(/\s+/).filter(Boolean);
   const heardWords = norm(heard);
+  const words = norm(target);
   let correct = 0;
-  const html = norm(target).map(w => {
+  const html = words.map(w => {
     const idx = heardWords.indexOf(w);
     if (idx !== -1) { heardWords.splice(idx, 1); correct++; return `<span class="ok">${w}</span>`; }
     return `<span class="ng">${w}</span>`;
   }).join(' ');
-  const total = norm(target).length;
-  return `正答率 ${Math.round(correct / total * 100)}%:` + html;
+  return `正答率 ${Math.round(correct / words.length * 100)}%:` + html;
 }
 
-function escapeHtml(s) {
-  return s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-}
+function fmt(sec) { sec = Math.floor(sec); return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`; }
+function escapeHtml(s) { return s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
 render();
 </script>
