@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>発音練習</title>
+<style>
+  body { font-family: sans-serif; margin: 0; padding: 16px; background: #f4f6fa; }
+  h1 { font-size: 20px; }
+  .card { background: #fff; border-radius: 12px; padding: 14px; margin-bottom: 14px; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+  textarea { width: 100%; font-size: 16px; box-sizing: border-box; }
+  button { font-size: 16px; padding: 10px 14px; margin: 4px 4px 0 0; border: none; border-radius: 8px; background: #3b6ef5; color: #fff; }
+  button.rec { background: #e5484d; }
+  button.sub { background: #888; }
+  .sentence { font-size: 18px; margin-bottom: 6px; }
+  .result { margin-top: 8px; font-size: 16px; }
+  .ng { color: #e5484d; font-weight: bold; text-decoration: underline; }
+  .ok { color: #1a9a4a; }
+</style>
+</head>
+<body>
+<h1>発音練習アプリ</h1>
+
+<div class="card">
+  <textarea id="newText" rows="2" placeholder="練習したい英文を入力"></textarea>
+  <button onclick="addSentence()">例文を登録</button>
+</div>
+
+<div id="list"></div>
+
+<script>
+let sentences = JSON.parse(localStorage.getItem('sentences') || '[]');
+const recordings = {}; // 例文ごとの録音データ(index → Blob URL)
+let recorder = null;
+
+function save() { localStorage.setItem('sentences', JSON.stringify(sentences)); }
+
+function addSentence() {
+  const t = document.getElementById('newText').value.trim();
+  if (!t) return;
+  sentences.push(t);
+  save();
+  document.getElementById('newText').value = '';
+  render();
+}
+
+function removeSentence(i) {
+  sentences.splice(i, 1);
+  save();
+  render();
+}
+
+function render() {
+  const list = document.getElementById('list');
+  list.innerHTML = '';
+  sentences.forEach((s, i) => {
+    const div = document.createElement('div');
+    div.className = 'card';
+    div.innerHTML = `
+      <div class="sentence">${escapeHtml(s)}</div>
+      <button onclick="speak(${i})">お手本</button>
+      <button class="rec" id="rec${i}" onclick="toggleRecord(${i})">録音</button>
+      <button onclick="compare(${i})">聞き比べ</button>
+      <button onclick="check(${i})">発音チェック</button>
+      <button class="sub" onclick="removeSentence(${i})">削除</button>
+      <div class="result" id="res${i}"></div>`;
+    list.appendChild(div);
+  });
+}
+
+// お手本音声(合成音声)を再生。終わったら callback を呼ぶ
+function speak(i, callback) {
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(sentences[i]);
+  u.lang = 'en-US';
+  u.rate = 0.9;
+  if (callback) u.onend = callback;
+  speechSynthesis.speak(u);
+}
+
+// 録音の開始・停止
+async function toggleRecord(i) {
+  const btn = document.getElementById('rec' + i);
+  if (recorder && recorder.state === 'recording') {
+    recorder.stop();
+    btn.textContent = '録音';
+    return;
+  }
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const chunks = [];
+  recorder = new MediaRecorder(stream);
+  recorder.ondataavailable = e => chunks.push(e.data);
+  recorder.onstop = () => {
+    recordings[i] = URL.createObjectURL(new Blob(chunks, { type: 'audio/webm' }));
+    stream.getTracks().forEach(t => t.stop());
+    document.getElementById('res' + i).textContent = '録音しました。「聞き比べ」を押してください。';
+  };
+  recorder.start();
+  btn.textContent = '停止';
+}
+
+// お手本 → 自分の声 の順で連続再生
+function compare(i) {
+  if (!recordings[i]) { alert('先に録音してください'); return; }
+  speak(i, () => {
+    setTimeout(() => new Audio(recordings[i]).play(), 400);
+  });
+}
+
+// 発音チェック:話した内容を文字起こしして例文と比較
+function check(i) {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { alert('このブラウザは音声認識に対応していません'); return; }
+  const res = document.getElementById('res' + i);
+  const rec = new SR();
+  rec.lang = 'en-US';
+  rec.interimResults = false;
+  res.textContent = '話してください…';
+  rec.onresult = e => {
+    const heard = e.results[0][0].transcript;
+    res.innerHTML = '聞き取り結果: ' + escapeHtml(heard) + '<br>' + diff(sentences[i], heard);
+  };
+  rec.onerror = e => { res.textContent = 'エラー: ' + e.error; };
+  rec.start();
+}
+
+// 例文の各単語が聞き取れたかを色分け
+function diff(target, heard) {
+  const norm = s => s.toLowerCase().replace(/[^a-z0-9' ]/g, '').split(/\s+/).filter(Boolean);
+  const heardWords = norm(heard);
+  let correct = 0;
+  const html = norm(target).map(w => {
+    const idx = heardWords.indexOf(w);
+    if (idx !== -1) { heardWords.splice(idx, 1); correct++; return `<span class="ok">${w}</span>`; }
+    return `<span class="ng">${w}</span>`;
+  }).join(' ');
+  const total = norm(target).length;
+  return `正答率 ${Math.round(correct / total * 100)}%:` + html;
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+render();
+</script>
+</body>
+</html>
